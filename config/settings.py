@@ -41,6 +41,7 @@ MIDDLEWARE = [
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -86,7 +87,17 @@ STORAGES = {
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
 }
 
+# Render terminates TLS and forwards the original scheme in this header.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+if not DEBUG:
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 7
+    CSRF_COOKIE_SECURE = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    # Off by default: Render already redirects http to https at its edge, and a
+    # misread forwarded scheme here would turn into a redirect loop that takes
+    # the whole service down. Set SECURE_SSL_REDIRECT=1 to turn it on.
+    SECURE_SSL_REDIRECT = _env_flag("SECURE_SSL_REDIRECT", False)
 
 LOGGING = {
     "version": 1,

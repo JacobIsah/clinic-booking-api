@@ -275,6 +275,43 @@ class LevelTwoValidationTests(ApiTestCase):
         self.assertEqual(stored.email, "ada@example.com")
         self.assertEqual(stored.name, "Ada Obi")
 
+    def test_oversized_values_are_400_not_500(self):
+        long_value = "x" * 400
+        cases = [
+            {"slot_id": long_value, "name": "Ada", "email": "a@example.com"},
+            {"slot_id": "s1", "name": long_value, "email": "b@example.com"},
+            {"slot_id": "s1", "name": "Ada", "email": long_value + "@example.com"},
+        ]
+        for body in cases:
+            with self.subTest(body={k: v[:12] for k, v in body.items()}):
+                response = self.post("/bookings", body)
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn("error", response.json())
+
+    def test_an_oversized_idempotency_key_is_400_not_500(self):
+        response = self.post(
+            "/bookings",
+            {"slot_id": "s1", "name": "Ada", "email": "a@example.com"},
+            headers={"idempotency-key": "k" * 400},
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+
+    def test_an_oversized_slot_id_in_reset_is_400_not_500(self):
+        response = self.post(
+            "/reset",
+            {
+                "slots": [
+                    {
+                        "id": "x" * 400,
+                        "provider": "Dr Ade",
+                        "start": iso(self.future),
+                        "end": iso(self.future + timedelta(minutes=30)),
+                    }
+                ]
+            },
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+
     def test_malformed_json_is_400(self):
         response = self.client.post(
             "/bookings", data="{not json", content_type="application/json", headers=HEADERS
@@ -703,15 +740,55 @@ class LevelFiveRateLimitTests(ApiTestCase):
         response = self.book("s6", email="spam@example.com")
         self.assertEqual(response.status_code, 201, response.content)
 
-    def test_rate_limit_is_checked_before_idempotent_replay(self):
+    def test_idempotent_replays_are_not_rate_limited(self):
+        # Level 4 says the same key with the same body returns the same
+        # response, so a retry must not turn into a 429. A replay books nothing,
+        # so it is not a fresh attempt either.
         body = {"slot_id": "s1", "name": "Ada Obi", "email": "spam@example.com"}
         first = self.post("/bookings", body, headers={"idempotency-key": "rl-key"})
         self.assertEqual(first.status_code, 201)
-        for _ in range(4):
-            self.post("/bookings", body, headers={"idempotency-key": "rl-key"})
-        response = self.post("/bookings", body, headers={"idempotency-key": "rl-key"})
-        self.assertEqual(response.status_code, 429)
+
+        for attempt in range(10):
+            response = self.post("/bookings", body, headers={"idempotency-key": "rl-key"})
+            self.assertEqual(response.status_code, 201, (attempt, response.content))
+            self.assertEqual(response.json()["id"], first.json()["id"])
+
         self.assertEqual(Booking.objects.count(), 1)
+        # Only the first request counted as an attempt.
+        self.assertEqual(BookingAttempt.objects.filter(email="spam@example.com").count(), 1)
+
+    def test_fresh_attempts_with_new_keys_are_still_rate_limited(self):
+        for i in range(5):
+            response = self.post(
+                "/bookings",
+                {"slot_id": "s{}".format(i + 1), "name": "Ada Obi", "email": "spam@example.com"},
+                headers={"idempotency-key": "key-{}".format(i)},
+            )
+            self.assertEqual(response.status_code, 201, response.content)
+
+        response = self.post(
+            "/bookings",
+            {"slot_id": "s6", "name": "Ada Obi", "email": "spam@example.com"},
+            headers={"idempotency-key": "key-6"},
+        )
+        self.assertEqual(response.status_code, 429, response.content)
+        # A request turned away by the limiter must not leave a half-written
+        # record behind, or the retry would be stuck replaying nothing.
+        self.assertFalse(IdempotencyRecord.objects.filter(key="key-6").exists())
+
+    def test_a_422_for_a_reused_key_is_not_rate_limited_either(self):
+        self.post(
+            "/bookings",
+            {"slot_id": "s1", "name": "Ada Obi", "email": "spam@example.com"},
+            headers={"idempotency-key": "clash"},
+        )
+        for _ in range(8):
+            response = self.post(
+                "/bookings",
+                {"slot_id": "s2", "name": "Ada Obi", "email": "spam@example.com"},
+                headers={"idempotency-key": "clash"},
+            )
+            self.assertEqual(response.status_code, 422, response.content)
 
 
 # --------------------------------------------------------------------------- #

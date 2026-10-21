@@ -29,6 +29,13 @@ from .models import CANCELLED, CONFIRMED, Booking, BookingAttempt, IdempotencyRe
 MAX_ATTEMPTS_PER_WINDOW = 5
 RATE_LIMIT_WINDOW_SECONDS = 60
 
+# Matching the column widths in models.py. Checking these here turns oversized
+# input into a clean 400 instead of letting the database raise a 500.
+MAX_ID_LENGTH = 255
+MAX_NAME_LENGTH = 255
+MAX_EMAIL_LENGTH = 320
+MAX_KEY_LENGTH = 255
+
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -205,6 +212,10 @@ def reset(request):
             return error(400, "slots[{}].id is required".format(index))
         if not isinstance(provider, str) or not provider.strip():
             return error(400, "slots[{}].provider is required".format(index))
+        if len(slot_id.strip()) > MAX_ID_LENGTH:
+            return error(400, "slots[{}].id is too long".format(index))
+        if len(provider.strip()) > MAX_NAME_LENGTH:
+            return error(400, "slots[{}].provider is too long".format(index))
         start = parse_slot_datetime(item.get("start"))
         end = parse_slot_datetime(item.get("end"))
         if start is None:
@@ -277,6 +288,13 @@ def _insert_booking(data):
     name = name.strip()
     email = email.strip().lower()
 
+    if len(slot_id) > MAX_ID_LENGTH:
+        return 400, {"error": "slot_id is too long"}
+    if len(name) > MAX_NAME_LENGTH:
+        return 400, {"error": "name is too long"}
+    if len(email) > MAX_EMAIL_LENGTH:
+        return 400, {"error": "email is not valid"}
+
     try:
         validate_email(email)
     except ValidationError:
@@ -306,51 +324,76 @@ def _insert_booking(data):
     return 201, booking_json(booking)
 
 
+def _replay(record, request_hash):
+    """Answer a repeat of a key we have already seen, or None if it is new to us.
+
+    Replays deliberately sit in front of the rate limiter: level 4 says the same
+    key with the same body returns the same response, full stop, so a retry must
+    not come back as a 429. Nothing here books anything, it only hands back what
+    the first request already decided.
+    """
+    if not secrets.compare_digest(record.request_hash, request_hash):
+        return error(422, "this Idempotency-Key was already used with a different body")
+    if record.status_code is None:
+        # The first request holding this key is still in flight, so wait for it
+        # and replay its response rather than racing it.
+        for _ in range(50):
+            time.sleep(0.1)
+            record.refresh_from_db()
+            if record.status_code is not None:
+                break
+    if record.status_code is None:
+        return error(409, "a request with this Idempotency-Key is still in progress")
+    return JsonResponse(record.response_body, status=record.status_code)
+
+
 def create_booking(request):
     data, bad = read_json_object(request)
     if bad:
         return bad
 
-    # Level 5 runs before anything that can fail, so failed attempts count too.
-    raw_email = data.get("email")
-    if isinstance(raw_email, str) and raw_email.strip():
-        retry_after = rate_limit_retry_after(raw_email.strip().lower())
-        if retry_after is not None:
-            return error(
-                429,
-                "too many booking attempts for this email, try again later",
-                {"Retry-After": str(retry_after)},
-            )
-
     idempotency_key = (request.headers.get("Idempotency-Key") or "").strip()
+    request_hash = None
+
+    if len(idempotency_key) > MAX_KEY_LENGTH:
+        return error(400, "Idempotency-Key is too long")
+
+    if idempotency_key:
+        # Level 4: canonical JSON, so key order and whitespace do not read as a
+        # different body.
+        request_hash = hashlib.sha256(
+            json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+        seen = IdempotencyRecord.objects.filter(key=idempotency_key).first()
+        if seen is not None:
+            return _replay(seen, request_hash)
+
+    # Level 5. This is a genuine attempt rather than a replay, so it counts, and
+    # it runs before anything that can fail so that failures count too. Only an
+    # address that could plausibly be one is counted: anything longer than the
+    # column is rejected as a 400 below and must never reach the attempts table.
+    raw_email = data.get("email")
+    if isinstance(raw_email, str):
+        candidate = raw_email.strip().lower()
+        if candidate and len(candidate) <= MAX_EMAIL_LENGTH:
+            retry_after = rate_limit_retry_after(candidate)
+            if retry_after is not None:
+                return error(
+                    429,
+                    "too many booking attempts for this email, try again later",
+                    {"Retry-After": str(retry_after)},
+                )
+
     if not idempotency_key:
         status, payload = _insert_booking(data)
         return JsonResponse(payload, status=status)
 
-    # Level 4: canonical JSON, so key order and whitespace do not read as a
-    # different body.
-    request_hash = hashlib.sha256(
-        json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    ).hexdigest()
-
     record, created = IdempotencyRecord.objects.get_or_create(
         key=idempotency_key, defaults={"request_hash": request_hash}
     )
-
     if not created:
-        if not secrets.compare_digest(record.request_hash, request_hash):
-            return error(422, "this Idempotency-Key was already used with a different body")
-        if record.status_code is None:
-            # The first request holding this key is still in flight, so wait for
-            # it and replay its response rather than racing it.
-            for _ in range(50):
-                time.sleep(0.1)
-                record.refresh_from_db()
-                if record.status_code is not None:
-                    break
-        if record.status_code is None:
-            return error(409, "a request with this Idempotency-Key is still in progress")
-        return JsonResponse(record.response_body, status=record.status_code)
+        # Another request claimed the key between the check above and here.
+        return _replay(record, request_hash)
 
     status, payload = _insert_booking(data)
     IdempotencyRecord.objects.filter(key=idempotency_key).update(

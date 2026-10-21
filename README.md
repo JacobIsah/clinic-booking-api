@@ -136,5 +136,15 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5433/postgres DATABASE_NO_
 .venv/Scripts/python.exe manage.py test clinic
 ```
 
-61 tests, grouped by level, including two that run a dozen genuinely concurrent
+66 tests, grouped by level, including two that run a dozen genuinely concurrent
 requests at one slot and assert that exactly one wins.
+
+All 66 pass against PostgreSQL 18. On SQLite the two concurrency tests fail with
+"database is locked" — SQLite allows only one writer, so they need Postgres.
+
+There is also `verify.py`, which exercises the whole contract over HTTP against
+a deployed URL the way a grader would:
+
+```bash
+python verify.py https://your-service.onrender.com YOUR-API-KEY
+```
