@@ -112,11 +112,27 @@ cp .env.example .env
 ```
 
 Without `DATABASE_URL` it uses SQLite, which is fine for everything except the
-two concurrency tests — SQLite only allows one writer, so those need Postgres:
+two concurrency tests — SQLite allows only one writer, so those need Postgres.
+
+With conda (no Docker needed, which is how this was verified):
+
+```bash
+conda create -n pgtest -c conda-forge postgresql -y
+PG=~/anaconda3/envs/pgtest/Library/bin
+"$PG/initdb.exe" -D ./pgdata -U postgres --pwfile=<(echo postgres) -A md5
+"$PG/pg_ctl.exe" -D ./pgdata -l pg.log -o "-p 5433 -c listen_addresses=127.0.0.1" start
+```
+
+Or with Docker:
 
 ```bash
 docker run -d --name clinic-pg -e POSTGRES_PASSWORD=postgres -p 5433:5432 postgres:16
-DATABASE_URL=postgresql://postgres:postgres@localhost:5433/postgres DATABASE_NO_SSL=1 \
+```
+
+Either way:
+
+```bash
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5433/postgres DATABASE_NO_SSL=1 \
   .venv/Scripts/python.exe manage.py test clinic
 ```
 
