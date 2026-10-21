@@ -18,6 +18,9 @@ jobs:
             echo "BASE_URL repository variable is not set; nothing to ping."
             exit 0
           fi
-          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 90 "${{ vars.BASE_URL }}/healthz")
-          echo "GET ${{ vars.BASE_URL }}/healthz -> $code"
+          # Tolerate a trailing slash, which would otherwise make //healthz.
+          base="${{ vars.BASE_URL }}"
+          base="${base%/}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 90 "$base/healthz")
+          echo "GET $base/healthz -> $code"
           test "$code" = "200"
