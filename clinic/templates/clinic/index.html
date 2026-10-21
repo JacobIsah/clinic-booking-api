@@ -85,7 +85,8 @@
   .note.bad { background: var(--bad-bg); color: var(--bad-ink); border-color: var(--bad-line); }
   .note code { font-size: 13px; }
   .muted { color: var(--muted); }
-  .hide { display: none; }
+  /* A utility class, so it has to beat the component rules below it. */
+  .hide { display: none !important; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
   .pager { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
   @media (max-width: 560px) {
