@@ -28,17 +28,22 @@ def call(base, key, method, path, body=None, headers=None, timeout=90):
         request.add_header("X-API-Key", key)
     for header, value in (headers or {}).items():
         request.add_header(header, value)
+    # Header names are case-insensitive, and HTTP/2 lowercases them, so a proxy
+    # in front of the app can hand back "retry-after" where the app sent
+    # "Retry-After". Key everything in lower case and look it up that way.
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode()
-            return response.status, (json.loads(raw) if raw else {}), dict(response.headers)
+            return (response.status,
+                    (json.loads(raw) if raw else {}),
+                    {k.lower(): v for k, v in response.headers.items()})
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode()
         try:
             parsed = json.loads(raw) if raw else {}
         except ValueError:
             parsed = {"raw": raw[:200]}
-        return exc.code, parsed, dict(exc.headers)
+        return exc.code, parsed, {k.lower(): v for k, v in exc.headers.items()}
 
 
 def check(label, condition, detail=""):
@@ -234,7 +239,7 @@ def main():
     for i in range(6):
         status, _, head = call(base, key, "POST", "/bookings",
                                {"slot_id": "s{}".format(i + 1), "name": "Spammer", "email": spam})
-        codes.append((status, head.get("Retry-After")))
+        codes.append((status, head.get("retry-after")))
     last_status, retry_after = codes[-1]
     check("first five attempts were allowed", all(s != 429 for s, _ in codes[:5]), codes)
     check("the sixth attempt is 429", last_status == 429, codes)
