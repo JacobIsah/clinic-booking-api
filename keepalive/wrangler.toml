@@ -1,0 +1,15 @@
+name = "clinic-keepalive"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Every ten minutes. Render sleeps after about fifteen, so this never lets it.
+# Cron Triggers run in UTC, which does not matter for a fixed interval.
+[triggers]
+crons = ["*/10 * * * *"]
+
+[vars]
+TARGET_URL = "https://clinic-booking-api-8iih.onrender.com/healthz"
+
+# Keep the logs the Workers dashboard shows for this script.
+[observability]
+enabled = true

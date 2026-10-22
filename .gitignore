@@ -8,3 +8,5 @@ staticfiles/
 .pytest_cache/
 DEPLOY.md
 DEPLOY.md/
+# Cloudflare Workers build cache
+keepalive/.wrangler/
